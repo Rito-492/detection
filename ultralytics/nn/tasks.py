@@ -1609,7 +1609,6 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
-            CBAM,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1668,6 +1667,9 @@ def parse_model(d, ch, verbose=True):
                 legacy = False
         elif m is AIFI:
             args = [ch[f], *args]
+        elif m is CBAM:
+            c2 = ch[f]  # CBAM output channels = input channels
+            args = [ch[f], *args]  # prepend input channels, keep kernel_size as-is
         elif m in frozenset({HGStem, HGBlock}):
             c1, cm, c2 = ch[f], args[0], args[1]
             args = [c1, cm, c2, *args[2:]]

@@ -6,13 +6,16 @@ from ultralytics import YOLO
 STUDENT_ID = "55230316"
 EXPERIMENT_NAME = f"yolov8_cbam_{STUDENT_ID}"
 
-EPOCHS = 100
+EPOCHS = 1000
 IMG_SIZE = 640
 BATCH_SIZE = 16
-DEVICE = 0
-DATASET = "coco8.yaml"
-# MODEL_CONFIG = "ultralytics/cfg/models/8/yolov8_cbam_55230316.yaml"
-MODEL_CONFIG = "checkpoints\yolov8n.pt"
+DEVICE = 7
+DATASET = "coco128.yaml"
+MODEL_CONFIG = "ultralytics/cfg/models/v8/yolov8_cbam_55230316.yaml"
+# MODEL_CONFIG = "ultralytics/cfg/models/v8/yolov8.yaml"
+# PRETRAINED = "checkpoints/yolov8n.pt"  # 可选：加载预训练权重加速收敛
+# PRETRAINED = "yolov8n.pt"
+PRETRAINED = None
 
 print("=" * 60)
 print(f"学生学号：{STUDENT_ID}")
@@ -22,6 +25,14 @@ print("=" * 60)
 
 print(f"\n从配置文件创建模型：{MODEL_CONFIG}")
 model = YOLO(MODEL_CONFIG)
+
+# 加载预训练权重（迁移学习）
+import os
+if PRETRAINED and os.path.exists(PRETRAINED):
+    print(f"加载预训练权重：{PRETRAINED}")
+    model.load(PRETRAINED)
+else:
+    print("未找到预训练权重，从头开始训练")
 
 print(f"\n开始训练...")
 print(f"数据集：{DATASET}")
@@ -33,8 +44,7 @@ results = model.train(
     imgsz=IMG_SIZE,
     batch=BATCH_SIZE,
     device=DEVICE,
-    pretrained=True,
-    # project="runs/detect",
+    amp=False,
     name=EXPERIMENT_NAME,
     exist_ok=True,
     verbose=True,
@@ -65,7 +75,7 @@ except Exception:
 print(f"{'='*60}")
 
 print("\n执行推理测试...")
-test_image = "bus.jpg"
+test_image = "test_pics/bus.jpg"
 det_results = model(test_image, device=DEVICE)
 
 for result in det_results:

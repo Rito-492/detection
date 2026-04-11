@@ -36,7 +36,8 @@ DEVICE = get_device()
 # 可以使用以下任一来源的模型：
 # 1. 预训练模型：yolo11n.pt, yolo11s.pt 等
 # 2. 自定义训练：runs/detect/train_55230316/weights/best.pt
-MODEL_PATH = "yolo11n.pt"  # 使用预训练的 nano 版本
+# MODEL_PATH = "checkpoints/yolov8n.pt"  # 使用预训练的 nano 版本
+MODEL_PATH = "runs/detect/yolov8_cbam_55230316/weights/best.pt"
 
 print(f"\n加载模型：{MODEL_PATH}")
 model = YOLO(MODEL_PATH)
@@ -55,8 +56,9 @@ IMAGE_SIZE = 640          # 推理时图像尺寸
 # 测试图像列表
 # 可以是本地路径或 URL
 TEST_IMAGES = [
-    "https://ultralytics.com/images/bus.jpg",
-    "https://ultralytics.com/images/zidane.jpg",
+    "/home/tyr/datasets/coco8/images/train/000000000034.jpg",
+    "test_pics/bus.jpg",
+    "test_pics/zidane.jpg",
     # 添加更多本地图像路径...
     # "images/test1.jpg",
     # "images/test2.jpg",
@@ -98,6 +100,9 @@ def process_results(results):
     Args:
         results: YOLO 推理结果对象
     """
+    import os
+    os.makedirs("inference_results_55230316", exist_ok=True)
+
     for result in results:
         boxes = result.boxes
 
@@ -125,7 +130,7 @@ def process_results(results):
             print(f"  [{i+1:2d}] {class_name:<14} {conf:>6.2%}    [{x1:5.1f}, {y1:5.1f}, {x2:5.1f}, {y2:5.1f}]")
 
         # 保存结果图像
-        output_path = result.save("inference_results_55230316/")[0]
+        output_path = result.save(f"inference_results_55230316/result_{i}.jpg")[0]
         print(f"\n  结果已保存：{output_path}")
 
 # ============================================================================

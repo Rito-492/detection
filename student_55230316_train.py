@@ -24,9 +24,8 @@ BATCH_SIZE = 16   # 批次大小：根据 GPU 显存调整，显存小则减小 
 LEARNING_RATE = 0.01  # 初始学习率
 
 # 数据集选择
-# coco8.yaml 是一个小型验证数据集（仅 8 张图像）
-# 正式训练可替换为 coco.yaml、custom_dataset.yaml 等
-DATASET = "coco8.yaml"
+# DroneVehicle: 无人机视角车辆检测数据集（可见光 + 红外双模态）
+DATASET = "/home/r1t0/workspace/30_projects/10_academic_labs/智能算法综合实践/YOLOv8/ultralytics/cfg/datasets/DroneVehicle.yaml"
 
 # ============================================================================
 # 二、模型加载

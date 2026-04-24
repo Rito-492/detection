@@ -1,0 +1,134 @@
+# Ultralytics AGPL-3.0 License - https://ultralytics.com/license
+
+# DroneVehicle dataset - 无人机视角车辆检测数据集
+# 包含可见光和红外双模态图像
+# 类别：car, truck, bus, van
+
+# 数据集根目录
+path: /home/r1t0/workspace/30_projects/10_academic_labs/智能算法综合实践/datasets/DroneVehicle
+
+# 训练集和验证集路径（需要转换后的 YOLO 格式）
+train: images/train  # 训练图像目录
+val: images/val      # 验证图像目录
+
+# 类别定义
+names:
+  0: car
+  1: truck
+  2: bus
+  3: van
+
+# 下载和转换脚本（可选）
+download: |
+  import os
+  import xml.etree.ElementTree as ET
+  from pathlib import Path
+  from PIL import Image
+  import shutil
+
+  from ultralytics.utils import TQDM
+
+  # 类别映射
+  names = {"car": 0, "truck": 1, "bus": 2, "van": 3}
+
+  def polygon_to_bbox(polygon_points, img_width, img_height):
+      """将多边形坐标转换为 YOLO 格式的边界框"""
+      xs = [int(polygon_points[i]) for i in range(0, len(polygon_points), 2)]
+      ys = [int(polygon_points[i]) for i in range(1, len(polygon_points), 2)]
+
+      # 计算边界框
+      xmin, xmax = min(xs), max(xs)
+      ymin, ymax = min(ys), max(ys)
+
+      # 转换为 YOLO 格式：x_center, y_center, width, height (归一化)
+      x_center = (xmin + xmax) / 2.0 / img_width
+      y_center = (ymin + ymax) / 2.0 / img_height
+      w = (xmax - xmin) / img_width
+      h = (ymax - ymin) / img_height
+
+      return f"{x_center:.6f} {y_center:.6f} {w:.6f} {h:.6f}"
+
+  def xml2yolo(xml_path, img_path, label_path):
+      """转换单个 XML 文件为 YOLO 格式"""
+      tree = ET.parse(xml_path)
+      root = tree.getroot()
+
+      # 获取图像尺寸
+      size = root.find("size")
+      img_width = int(size.find("width").text)
+      img_height = int(size.find("height").text)
+
+      lines = []
+      for obj in root.findall("object"):
+          name = obj.find("name").text
+          if name not in names:
+              continue
+
+          cls_id = names[name]
+
+          # 获取多边形坐标
+          polygon = obj.find("polygon")
+          if polygon is None:
+              continue
+
+          # 提取所有坐标点
+          points = []
+          for i in range(1, 100):
+              x_elem = polygon.find(f"x{i}")
+              y_elem = polygon.find(f"y{i}")
+              if x_elem is None or y_elem is None:
+                  break
+              points.extend([x_elem.text, y_elem.text])
+
+          if len(points) >= 4:
+              bbox = polygon_to_bbox(points, img_width, img_height)
+              lines.append(f"{cls_id} {bbox}\n")
+
+      # 写入 YOLO 格式标注
+      os.makedirs(os.path.dirname(label_path), exist_ok=True)
+      with open(label_path, "w") as f:
+          f.writelines(lines)
+
+  def process_split(split_name):
+      """处理一个数据分割（train/val/test）"""
+      base_dir = Path(yaml["path"])
+      split_dir = base_dir / split_name
+
+      # 创建输出目录
+      images_out = base_dir / "images" / split_name
+      labels_out = base_dir / "labels" / split_name
+      images_out.mkdir(parents=True, exist_ok=True)
+      labels_out.mkdir(parents=True, exist_ok=True)
+
+      # 处理可见光图像
+      img_dir = split_dir / f"{split_name}img"
+      label_dir = split_dir / f"{split_name}label"
+
+      if img_dir.exists() and label_dir.exists():
+          for xml_file in TQDM(list(label_dir.glob("*.xml")), desc=f"Processing {split_name} (visible)"):
+              img_name = xml_file.stem + ".jpg"
+              img_path = img_dir / img_name
+              if img_path.exists():
+                  # 复制图像
+                  shutil.copy2(img_path, images_out / img_name)
+                  # 转换标注
+                  xml2yolo(xml_file, img_path, labels_out / (xml_file.stem + ".txt"))
+
+      # 处理红外图像
+      img_dir_r = split_dir / f"{split_name}imgr"
+      label_dir_r = split_dir / f"{split_name}labelr"
+
+      if img_dir_r.exists() and label_dir_r.exists():
+          for xml_file in TQDM(list(label_dir_r.glob("*.xml")), desc=f"Processing {split_name} (infrared)"):
+              img_name = xml_file.stem + "_ir.jpg"
+              img_path = img_dir_r / img_name
+              if img_path.exists():
+                  # 复制图像
+                  shutil.copy2(img_path, images_out / img_name)
+                  # 转换标注
+                  xml2yolo(xml_file, img_path, labels_out / (xml_file.stem + "_ir.txt"))
+
+  # 处理所有分割
+  for split in ["train", "val", "test"]:
+      process_split(split)
+      print(f"Completed processing {split}")

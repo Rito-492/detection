@@ -1,4 +1,5 @@
 # YOLOv8-CBAM 改进版训练脚本
+# 作者：汤雨润
 # 学生学号：55230316
 
 from ultralytics import YOLO
@@ -13,7 +14,6 @@ DEVICE = 7
 DATASET = "coco128.yaml"
 MODEL_CONFIG = "ultralytics/cfg/models/v8/yolov8_cbam_55230316.yaml"
 # MODEL_CONFIG = "ultralytics/cfg/models/v8/yolov8.yaml"
-# PRETRAINED = "checkpoints/yolov8n.pt"  # 可选：加载预训练权重加速收敛
 # PRETRAINED = "yolov8n.pt"
 PRETRAINED = None
 
@@ -26,7 +26,7 @@ print("=" * 60)
 print(f"\n从配置文件创建模型：{MODEL_CONFIG}")
 model = YOLO(MODEL_CONFIG)
 
-# 加载预训练权重（迁移学习）
+# 加载预训练权重
 import os
 if PRETRAINED and os.path.exists(PRETRAINED):
     print(f"加载预训练权重：{PRETRAINED}")

@@ -153,6 +153,9 @@ runs/
 wandb/
 .DS_Store
 
+figures/
+checkpoints/
+
 # Neural Network weights -----------------------------------------------------------------------------------------------
 weights/
 *.weights

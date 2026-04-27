@@ -228,29 +228,41 @@ class DetectionLoss(nn.Module):
 
 
 # ── mAP 评估 ──────────────────────────────────────────────────────────────────
-def _iou(b1, b2):
-    def xyxy(b): return b[0]-b[2]/2, b[1]-b[3]/2, b[0]+b[2]/2, b[1]+b[3]/2
-    x1,y1,x2,y2 = xyxy(b1); x3,y3,x4,y4 = xyxy(b2)
-    ix = max(0, min(x2,x4)-max(x1,x3)); iy = max(0, min(y2,y4)-max(y1,y3))
-    inter = ix * iy
-    union = (x2-x1)*(y2-y1) + (x4-x3)*(y4-y3) - inter
-    return inter / (union + 1e-6)
+def _iou_matrix(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
+    """向量化 IoU，pred/gt 格式 [cx,cy,w,h]，返回 (P, G) IoU 矩阵"""
+    # 转 xyxy
+    px1 = pred[:, 0:1] - pred[:, 2:3] / 2;  py1 = pred[:, 1:2] - pred[:, 3:4] / 2
+    px2 = pred[:, 0:1] + pred[:, 2:3] / 2;  py2 = pred[:, 1:2] + pred[:, 3:4] / 2
+    gx1 = gt[:, 0] - gt[:, 2] / 2;          gy1 = gt[:, 1] - gt[:, 3] / 2
+    gx2 = gt[:, 0] + gt[:, 2] / 2;          gy2 = gt[:, 1] + gt[:, 3] / 2
+    ix1 = np.maximum(px1, gx1); iy1 = np.maximum(py1, gy1)
+    ix2 = np.minimum(px2, gx2); iy2 = np.minimum(py2, gy2)
+    inter = np.maximum(0, ix2 - ix1) * np.maximum(0, iy2 - iy1)
+    pa = (px2 - px1) * (py2 - py1)
+    ga = (gx2 - gx1) * (gy2 - gy1)
+    return inter / (pa + ga - inter + 1e-6)
 
 
 def _ap(pred_boxes, pred_scores, gt_boxes, iou_thr=0.5):
     if not pred_boxes or not gt_boxes:
         return 0.0
-    order   = sorted(range(len(pred_scores)), key=lambda i: pred_scores[i], reverse=True)
-    tp = np.zeros(len(order)); fp = np.zeros(len(order))
-    matched = [False] * len(gt_boxes)
+    pred_arr = np.array(pred_boxes)   # (P, 4)
+    gt_arr   = np.array(gt_boxes)     # (G, 4)
+    scores   = np.array(pred_scores)
+    order    = np.argsort(-scores)
+    iou_mat  = _iou_matrix(pred_arr, gt_arr)  # (P, G)
+
+    tp = np.zeros(len(order))
+    fp = np.zeros(len(order))
+    matched = np.zeros(len(gt_boxes), dtype=bool)
     for rank, i in enumerate(order):
-        best_iou, best_j = 0.0, -1
-        for j, gb in enumerate(gt_boxes):
-            if not matched[j]:
-                iou = _iou(pred_boxes[i], gb)
-                if iou > best_iou: best_iou, best_j = iou, j
-        if best_iou >= iou_thr: tp[rank] = 1; matched[best_j] = True
-        else: fp[rank] = 1
+        ious = iou_mat[i].copy()
+        ious[matched] = 0
+        best_j = int(np.argmax(ious))
+        if ious[best_j] >= iou_thr:
+            tp[rank] = 1; matched[best_j] = True
+        else:
+            fp[rank] = 1
     cum_tp = np.cumsum(tp); cum_fp = np.cumsum(fp)
     prec = cum_tp / (cum_tp + cum_fp + 1e-6)
     rec  = cum_tp / (len(gt_boxes) + 1e-6)
@@ -258,7 +270,24 @@ def _ap(pred_boxes, pred_scores, gt_boxes, iou_thr=0.5):
                for t in np.linspace(0, 1, 11)) / 11
 
 
-def evaluate_map(model, loader, num_classes, device, iou_thr=0.5, conf_thr=0.1):
+def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thr=0.5) -> np.ndarray:
+    """简单 NMS，返回保留的索引"""
+    if len(boxes) == 0:
+        return np.array([], dtype=int)
+    order = np.argsort(-scores)
+    keep  = []
+    while len(order):
+        i = order[0]
+        keep.append(i)
+        if len(order) == 1:
+            break
+        iou = _iou_matrix(boxes[i:i+1], boxes[order[1:]])[0]
+        order = order[1:][iou < iou_thr]
+    return np.array(keep, dtype=int)
+
+
+def evaluate_map(model, loader, num_classes, device, iou_thr=0.5, conf_thr=0.3):
+    """conf_thr=0.3 + NMS 大幅减少预测框数量，避免内存爆炸"""
     all_pred = {c: {'boxes': [], 'scores': []} for c in range(num_classes)}
     all_gt   = {c: [] for c in range(num_classes)}
     model.eval()
@@ -266,22 +295,40 @@ def evaluate_map(model, loader, num_classes, device, iou_thr=0.5, conf_thr=0.1):
         for batch in loader:
             imgs    = batch['image'].to(device)
             targets = batch['targets'].to(device)
-            preds   = model(imgs)
-            for b in range(imgs.size(0)):
+            preds   = model(imgs)           # (B, 3, 5+C, hw)
+
+            B = imgs.size(0)
+            conf_all  = torch.sigmoid(preds[:, :, 4, :])          # (B, 3, hw)
+            cls_all   = torch.softmax(preds[:, :, 5:, :], dim=2)  # (B, 3, C, hw)
+            cls_conf, cls_id = cls_all.max(dim=2)                  # (B, 3, hw)
+            score_all = (conf_all * cls_conf).reshape(B, -1)       # (B, 3*hw)
+            cls_id    = cls_id.reshape(B, -1)
+            bbox_all  = preds[:, :, :4, :].permute(0,1,3,2).reshape(B, -1, 4)
+
+            for b in range(B):
                 for gt in targets[b, targets[b, :, 0] >= 0]:
                     all_gt[int(gt[0].item())].append(gt[1:5].cpu().tolist())
-                for a in range(preds.size(1)):
-                    pa    = preds[b, a]
-                    conf  = torch.sigmoid(pa[4])
-                    cls_s = torch.softmax(pa[5:], dim=0)
-                    score = conf * cls_s.max(0).values
-                    cls_i = cls_s.argmax(0)
-                    for i in (score > conf_thr).nonzero(as_tuple=True)[0]:
-                        c = int(cls_i[i].item())
-                        cx, cy, w, h = pa[0,i].item(), pa[1,i].item(), pa[2,i].item(), pa[3,i].item()
-                        if w < 0.005 or h < 0.005: continue
-                        all_pred[c]['boxes'].append([cx, cy, w, h])
-                        all_pred[c]['scores'].append(score[i].item())
+
+                mask = score_all[b] > conf_thr
+                if not mask.any():
+                    continue
+                boxes  = bbox_all[b, mask].cpu().numpy()
+                scores = score_all[b, mask].cpu().numpy()
+                cids   = cls_id[b, mask].cpu().numpy()
+                valid  = (boxes[:, 2] >= 0.005) & (boxes[:, 3] >= 0.005)
+                boxes, scores, cids = boxes[valid], scores[valid], cids[valid]
+
+                # 按类别做 NMS，控制每张图预测框数量
+                for c in range(num_classes):
+                    cmask = cids == c
+                    if not cmask.any():
+                        continue
+                    cb, cs = boxes[cmask], scores[cmask]
+                    keep = _nms(cb, cs, iou_thr=0.5)
+                    for box, sc in zip(cb[keep], cs[keep]):
+                        all_pred[c]['boxes'].append(box.tolist())
+                        all_pred[c]['scores'].append(float(sc))
+
     ap_list = [_ap(all_pred[c]['boxes'], all_pred[c]['scores'], all_gt[c], iou_thr)
                for c in range(num_classes)]
     return float(np.mean(ap_list)), ap_list
@@ -296,9 +343,9 @@ def train(args):
     train_ds = DroneVehicleDataset(dataset_root, split='train')
     val_ds   = DroneVehicleDataset(dataset_root, split='val')
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
-                              num_workers=4, drop_last=True, collate_fn=collate_fn)
+                              num_workers=0, drop_last=True, collate_fn=collate_fn)
     val_loader   = DataLoader(val_ds,   batch_size=args.batch, shuffle=False,
-                              num_workers=4, collate_fn=collate_fn)
+                              num_workers=0, collate_fn=collate_fn)
     print(f'Train: {len(train_ds)} images, Val: {len(val_ds)} images')
 
     model     = BaselineDetector(num_classes=4).to(device)
@@ -329,22 +376,52 @@ def train(args):
                 print(f'Epoch {epoch}/{args.epochs}  Batch {i+1}/{len(train_loader)}  Loss: {loss.item():.4f}')
         scheduler.step()
 
-        # ── val loss ──
+        # ── val loss + mAP（单次遍历）──
         model.eval()
         val_loss, n_val = 0.0, 0
+        all_pred = {c: {'boxes': [], 'scores': []} for c in range(4)}
+        all_gt   = {c: [] for c in range(4)}
         with torch.no_grad():
             for batch in val_loader:
-                val_loss += loss_fn(model(batch['image'].to(device)),
-                                    batch['targets'].to(device)).item()
+                imgs    = batch['image'].to(device)
+                tgts    = batch['targets'].to(device)
+                preds   = model(imgs)
+                val_loss += loss_fn(preds, tgts).item()
                 n_val += 1
+                # 收集预测和 GT 用于 mAP
+                B = imgs.size(0)
+                conf_all  = torch.sigmoid(preds[:, :, 4, :])
+                cls_all   = torch.softmax(preds[:, :, 5:, :], dim=2)
+                cls_conf, cls_id = cls_all.max(dim=2)
+                score_all = (conf_all * cls_conf).reshape(B, -1)
+                cls_id_f  = cls_id.reshape(B, -1)
+                bbox_all  = preds[:, :, :4, :].permute(0,1,3,2).reshape(B, -1, 4)
+                for b in range(B):
+                    for gt in tgts[b, tgts[b, :, 0] >= 0]:
+                        all_gt[int(gt[0].item())].append(gt[1:5].cpu().tolist())
+                    mask = score_all[b] > 0.3
+                    if not mask.any(): continue
+                    boxes  = bbox_all[b, mask].cpu().numpy()
+                    scores = score_all[b, mask].cpu().numpy()
+                    cids   = cls_id_f[b, mask].cpu().numpy()
+                    valid  = (boxes[:, 2] >= 0.005) & (boxes[:, 3] >= 0.005)
+                    boxes, scores, cids = boxes[valid], scores[valid], cids[valid]
+                    for c in range(4):
+                        cmask = cids == c
+                        if not cmask.any(): continue
+                        keep = _nms(boxes[cmask], scores[cmask], iou_thr=0.5)
+                        for box, sc in zip(boxes[cmask][keep], scores[cmask][keep]):
+                            all_pred[c]['boxes'].append(box.tolist())
+                            all_pred[c]['scores'].append(float(sc))
+
+        ap_list = [_ap(all_pred[c]['boxes'], all_pred[c]['scores'], all_gt[c])
+                   for c in range(4)]
+        mAP = float(np.mean(ap_list))
 
         avg_train = total_loss / n_batch
         avg_val   = val_loss / max(n_val, 1)
         history['train_loss'].append(avg_train)
         history['val_loss'].append(avg_val)
-
-        # ── mAP ──
-        mAP, ap_list = evaluate_map(model, val_loader, 4, device)
         history['mAP'].append(mAP)
         idx_to_class = {v: k for k, v in STANDARD_CLASSES.items()}
         print(f'\nEpoch {epoch} | train_loss={avg_train:.4f}  val_loss={avg_val:.4f}  mAP@0.5={mAP:.4f}')
